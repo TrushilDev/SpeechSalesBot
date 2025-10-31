@@ -1,0 +1,17 @@
+pandas
+pyaudio
+pygame
+Speechrecognition
+pyttsx3
+scipy
+numpy
+edge_tts
+spacy
+gpt4all
+fastapi 
+uvicorn 
+textblob
+openpyxl
+python -m spacy download en_core_web_sm
+twilio
+python-dotenv
