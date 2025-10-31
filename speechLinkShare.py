@@ -112,6 +112,7 @@ def intro_message():
 # Keywords
 # ------------------------------
 AFFIRMATIVE = ["yes", "ya", "yup", "sure", "ha", "haan", "okay", "ok", "of course", "why not", "alright"]
+NEGATIVE = ["no", "nope", "not now", "not interested", "maybe later", "no thanks"]
 CALL_KEYWORDS = ["call me", "someone call", "talk to agent", "contact me"]
 
 # ------------------------------
@@ -128,17 +129,20 @@ def start_sales_conversation():
         recognizer.adjust_for_ambient_noise(source, duration=2)
         current_context = intro_message()
         product_explained = False
+        persuasion_used = False  # Flag to ensure persuasion happens only once
 
         while True:
             user_input = listen(source)
-            if user_input.lower() in ["exit", "quit", "stop","bye","by","cut","okay bye","ok bye"]:
+            user_input_lower = user_input.lower().strip()
+
+            if user_input_lower in ["exit", "quit", "stop","bye","by","cut","okay bye","ok bye"]:
                 speak("Thank you for your time! Have a great day.")
                 break
 
             emotion = detect_emotion(user_input)
 
             # Step 0: Call request funnel
-            if any(word in user_input.lower() for word in CALL_KEYWORDS):
+            if any(word in user_input_lower for word in CALL_KEYWORDS):
                 reply = "Sure! Our agent will call you shortly. Thank you for your time."
                 speak(reply)
                 ai_reply = reply
@@ -148,8 +152,34 @@ def start_sales_conversation():
                 ]
                 break
 
+            # Step 0.5: Handle NO with persuasion
+            if any(word in user_input_lower for word in NEGATIVE):
+                if not persuasion_used:
+                    persuasion_used = True
+                    offer_reply = (
+                        "I totally understand! But just to let you know, "
+                        "we have a special offer running — a 20% discount on all products today only! "
+                        "Would you like me to show you some options?"
+                    )
+                    speak(offer_reply)
+                    ai_reply = offer_reply
+                    df_log.loc[len(df_log)] = [
+                        current_context, user_input, emotion, ai_reply,
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    ]
+                    continue
+                else:
+                    # User already rejected even after persuasion
+                    speak("No worries at all. Thank you for your time! Have a wonderful day.")
+                    ai_reply = "User rejected offer after persuasion"
+                    df_log.loc[len(df_log)] = [
+                        current_context, user_input, emotion, ai_reply,
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    ]
+                    break
+
             # Step 1: if user agrees to hear about products
-            if any(word in user_input.lower() for word in AFFIRMATIVE) and not product_explained:
+            if any(word in user_input_lower for word in AFFIRMATIVE) and not product_explained:
                 product_text = "Here are our latest offers:\n"
                 for p in products:
                     product_text += f"- {p['product_name']}: {p['description']} at ₹{p['price']}\n"
@@ -160,7 +190,7 @@ def start_sales_conversation():
             # Step 2: if user mentions a product
             selected_product = None
             for p in products:
-                if p['product_name'].lower() in user_input.lower():
+                if p['product_name'].lower() in user_input_lower:
                     selected_product = p
                     break
 
