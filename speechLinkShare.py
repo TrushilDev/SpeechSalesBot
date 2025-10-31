@@ -20,9 +20,6 @@ nlp = spacy.load("en_core_web_sm")
 # Ollama text generation
 # ------------------------------
 def ai_response(prompt, model_name="phi3:mini"):
-    """
-    Generate AI response using Ollama local API.
-    """
     try:
         response = requests.post(
             "http://localhost:11434/api/generate",
@@ -135,7 +132,7 @@ def start_sales_conversation():
             user_input = listen(source)
             user_input_lower = user_input.lower().strip()
 
-            if user_input_lower in ["exit", "quit", "stop","bye","by","cut","okay bye","ok bye"]:
+            if user_input_lower in ["exit", "quit", "stop", "bye", "by", "cut", "okay bye", "ok bye"]:
                 speak("Thank you for your time! Have a great day.")
                 break
 
@@ -169,7 +166,6 @@ def start_sales_conversation():
                     ]
                     continue
                 else:
-                    # User already rejected even after persuasion
                     speak("No worries at all. Thank you for your time! Have a wonderful day.")
                     ai_reply = "User rejected offer after persuasion"
                     df_log.loc[len(df_log)] = [
@@ -194,12 +190,34 @@ def start_sales_conversation():
                     selected_product = p
                     break
 
+            #  Only send SMS when a product is actually selected
             if selected_product:
+                def send_sms_via_tripada(mobile_number, message):
+                    try:
+                        params = {
+                            "auth_key": "3364Pbo3nwHxLSLLyxCXTH",
+                            "mobiles": str(mobile_number),
+                            "message": message,
+                            "sender": "AUAGPT",
+                            "route": "4",
+                            "templateid": "1207167663997777761"
+                        }
+                        response = requests.get("https://sms.shreetripada.com/api/sendapi.php", params=params)
+                        print("Tripada SMS Response:", response.text)
+                    except Exception as e:
+                        print("Failed to send SMS via Tripada:", e)
+
+                # Send link for the selected product only
+                mobile_number = "7990747606"
+                product_link = selected_product["product_link"]
+                message = f"Dear customer Your One Time Password Is {selected_product['product_name']} For Reset password. AUAG METALLIC LLP"
+                send_sms_via_tripada(mobile_number, message)
+
                 reply = (
                     f"Great choice! I’ve sent the link of {selected_product['product_name']} "
                     f"to your phone number ending with 0234. "
                     "Thank you for your time! I really appreciate it. "
-                    "If you need anything, feel free to contact us."
+                    "If you need anything, feel free to contact us. "
                     "Our Contact number is 20251."
                 )
                 speak(reply)
@@ -209,19 +227,18 @@ def start_sales_conversation():
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 ]
                 break
-            else:
-                # Step 3: Normal conversation / persuasion
-                prompt = (
-                    f"You are a friendly sales agent.\n"
-                    f"Products: {products}\n"
-                    f"User said: {user_input}\n"
-                    f"User emotion: {emotion}\n"
-                    f"Respond naturally and briefly."
-                )
-                ai_reply = ai_response(prompt)
-                speak(ai_reply)
 
-            # Log every exchange
+            # Step 3: fallback small talk / AI handling
+            prompt = (
+                f"You are a friendly sales agent.\n"
+                f"Products: {products}\n"
+                f"User said: {user_input}\n"
+                f"User emotion: {emotion}\n"
+                f"Respond naturally and briefly."
+            )
+            ai_reply = ai_response(prompt)
+            speak(ai_reply)
+
             df_log.loc[len(df_log)] = [
                 current_context, user_input, emotion, ai_reply,
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S")
