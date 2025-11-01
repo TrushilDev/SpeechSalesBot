@@ -165,15 +165,43 @@ def start_sales_conversation():
 
             # Step 0: Call request funnel
             if any(word in user_input_lower for word in CALL_KEYWORDS):
-                reply = "Sure! Our agent will call you shortly. Thank you for your time."
+                current_hour = datetime.now().hour
+                if 11 <= current_hour < 17 :
+                    reply = "Please wait until the agent is connected..."
                 speak(reply)
-                ai_reply = reply
                 df_log.loc[len(df_log)] = [
-                    current_context, user_input, emotion, ai_reply,
+                    current_context,
+                    "Talk to agent requedted(within the working hours)",
+                    emotion, 
+                    reply,
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 ]
+                time.sleep(3)
+                speak("You are now connected to the agent. Ending the conversation. Thank you!")
                 break
-
+            else:
+                reply="Our agent will contact you later."
+                speak(reply)
+                ai_reply = speak
+                df_log.loc[len(df_log)] = [
+                    current_context,
+                    "Talk to agent requested (after hours)",
+                    emotion,
+                    reply,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ]
+                
+                # continue to normal product flow
+                speak("Meanwhile, would you like to hear about our products?")
+                ai_reply ="Asked user if they want to hear about products after call request."
+                df_log.loc[len(df_log)] = [
+                    current_context,
+                    "Asked about products after call request",
+                    emotion,
+                    ai_reply,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ]
+                
             # Step 0.5: Handle NO with persuasion
             if any(word in user_input_lower for word in NEGATIVE):
                 persuasion_used += 1

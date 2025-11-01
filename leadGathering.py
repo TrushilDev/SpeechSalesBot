@@ -11,14 +11,10 @@ import spacy
 from textblob import TextBlob
 import requests
 
-# ------------------------------
 # NLP & Spacy
-# ------------------------------
 nlp = spacy.load("en_core_web_sm")
 
-# ------------------------------
 # Ollama text generation
-# ------------------------------
 def ai_response(prompt, model_name="phi3:mini"):
     """Generate AI response using Ollama local API."""
     try:
@@ -31,48 +27,58 @@ def ai_response(prompt, model_name="phi3:mini"):
         print("Ollama Error:", e)
         return "I'm sorry, I didn’t catch that."
 
-# ------------------------------
 # TTS (edge-tts + pygame)
-# ------------------------------
 async def speak_async(text, voice="en-US-JennyNeural", rate="-15%"):
     try:
         communicate = edge_tts.Communicate(text, voice=voice, rate=rate)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
             await communicate.save(f.name)
             temp_path = f.name
-        pygame.mixer.init()
+            
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
+                
         pygame.mixer.music.load(temp_path)
         pygame.mixer.music.play()
         while pygame.mixer.music.get_busy():
             await asyncio.sleep(0.1)
         pygame.mixer.quit()
-        os.remove(temp_path)
+        # os.remove(temp_path)
+        for _ in range (5):
+            try:
+                os.remove(temp_path)
+                break
+            except PermissionError:
+                time.sleep(0.2)
     except Exception as e:
         print("TTS Error:", e)
 
 def speak(text, voice="en-US-JennyNeural"):
     asyncio.run(speak_async(text, voice=voice))
 
-# ------------------------------
 # Speech recognition setup
-# ------------------------------
 recognizer = sr.Recognizer()
-recognizer.energy_threshold = 250
-recognizer.dynamic_energy_threshold = True
+recognizer.energy_threshold = 200
+recognizer.dynamic_energy_threshold = False
 
 def listen(source, lang="en-IN"):
     print("Listening...")
     try:
-        audio = recognizer.listen(source, timeout=5, phrase_time_limit=8)
+        audio = recognizer.listen(source, timeout=3, phrase_time_limit=5)
         text = recognizer.recognize_google(audio, language=lang)
         print("User:", text)
         return text
-    except Exception:
+    except sr.WaitTimeoutError:
+        speak("Voice not detected")
+        return "No response"
+    except sr.UnknownValueError:
+        speak("Could not understand")
+        return "No response"
+    except Exception as e:
+        print("Recognition Error:" ,e)
         return "No response"
 
-# ------------------------------
 # Emotion detection
-# ------------------------------
 def detect_emotion(text):
     blob = TextBlob(text)
     s = blob.sentiment.polarity
@@ -82,9 +88,7 @@ def detect_emotion(text):
         return "angry"
     return "neutral"
 
-# ------------------------------
 # Greeting message
-# ------------------------------
 def intro_message():
     return (
         "Hello there! I’m your sales agent from Creer Infotech. "
@@ -93,15 +97,11 @@ def intro_message():
         "Would you be interested in learning more or buying one of our products?"
     )
 
-# ------------------------------
 # Keywords
-# ------------------------------
 AFFIRMATIVE = ["yes", "ya", "yup", "sure", "ha", "haan", "okay", "ok", "of course", "why not", "alright", "yeah", "yes please"]
 NEGATIVE = ["no", "not now", "later", "maybe next time", "nah", "nope", "cancel"]
 
-# ------------------------------
 # Main conversation
-# ------------------------------
 def start_sales_conversation():
     df_leads = pd.DataFrame(columns=["Name", "Interest", "Emotion", "Timestamp"])
 
@@ -158,18 +158,14 @@ def start_sales_conversation():
             speak(ai_reply)
             current_context = ai_reply
 
-    # ------------------------------
-    # Save leads to Excel
-    # ------------------------------
-    file_path = "Sales_Leads.xlsx"
+        # Save leads to Excel
+        file_path = "Sales_Leads.xlsx"
     if os.path.exists(file_path):
         old = pd.read_excel(file_path)
         df_leads = pd.concat([old, df_leads], ignore_index=True)
     df_leads.to_excel(file_path, index=False)
     print("Lead saved successfully to Sales_Leads.xlsx.")
 
-# ------------------------------
 # Run the bot
-# ------------------------------
 if __name__ == "__main__":
     start_sales_conversation()
