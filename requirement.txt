@@ -15,3 +15,4 @@ openpyxl
 python -m spacy download en_core_web_sm
 twilio
 python-dotenv
+python-multipart
