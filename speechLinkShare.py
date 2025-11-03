@@ -352,7 +352,7 @@ def handle_conversation(
         mobile_number = phone 
         product_link = selected_product["product_link"]
         message = (
-           f"${product_link} is your OTP for login into your account. GGISKB"
+           f"{product_link} is your OTP for login into your account. GGISKB"
         )
         #  This still runs on your server, so it works! 
         send_sms_via_hsp(mobile_number, message) 
