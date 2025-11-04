@@ -39,7 +39,7 @@ def ai_response(prompt, model_name="phi3:mini"):
         print("Ollama Error:", e)
         return "I'm sorry, I didn’t catch that."
 
-
+# Emotion detection
 def detect_emotion(text):
     blob = TextBlob(text)
     s = blob.sentiment.polarity
@@ -194,7 +194,6 @@ def create_twiml_response(
         response.append(retry_gather)
 
     #  Final Fallback 
-    # If *all* gathers have timed out, this code will be executed.
     response.say("Sorry we weren't able to hear you after the multiple times. Goodbye.")
     response.hangup()
     
@@ -381,10 +380,7 @@ def handle_conversation(
     log_turn("[Fallback]", user_input, emotion, ai_reply_text, phone)
     return create_twiml_response(ai_reply_text, next_action_url)
 
-
-# --
-# ENDPOINTS TO TRIGGER OUTBOUND CALLS 
-# --
+# ENDPOINTS TO TRIGGER OUTBOUND CALLS
 
 def _initiate_call(user_number: str):
     """Helper function to load env vars and make a single call."""
