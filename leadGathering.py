@@ -3,15 +3,15 @@ import time
 # import speech_recognition as sr 
 import pandas as pd
 from datetime import datetime
-# import asyncio                 
-# import edge_tts                
-# import tempfile                
-# import pygame                  
+# import asyncio                  
+# import edge_tts                 
+# import tempfile                 
+# import pygame                   
 import spacy
 from textblob import TextBlob
 import requests
 import uvicorn
-from fastapi import FastAPI, Form, Response, Query, Request
+from fastapi import FastAPI, Form, Response, Query, Request, BackgroundTasks
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from twilio.rest import Client
 from dotenv import load_dotenv
@@ -97,14 +97,14 @@ app = FastAPI()
 #  Helper function for TwiML responses with silence retry 
 def create_twiml_response(text_to_say: str, action_url: str):
     response = VoiceResponse()
-    gather = Gather(input="speech", speechTimeout=5, action=action_url, method="POST")
+    gather = Gather(input="speech", language="en-IN", speechTimeout=7, action=action_url, method="POST")
     gather.say(text_to_say)
     response.append(gather)
 
     # Retry 2 times on silence
     for _ in range(2):
         response.say("I'm sorry, I didn't hear a response. Are you still there?")
-        retry_gather = Gather(input="speech", speechTimeout=5, action=action_url, method="POST")
+        retry_gather = Gather(input="speech", language="en-IN", speechTimeout=7, action=action_url, method="POST")
         response.append(retry_gather)
 
     response.say("We still didn't hear a response. Goodbye.")
@@ -135,6 +135,7 @@ def start_call(request: Request, From: str = Form(None), To: str = Form(None)):
 #  This endpoint handles the entire conversation loop 
 @app.post("/handle-conversation")
 def handle_conversation(
+    background_tasks: BackgroundTasks, 
     SpeechResult: str = Form(None),
     state: str = Query("awaiting_interest"), 
     phone: str = Query("Unknown")
@@ -168,7 +169,7 @@ def handle_conversation(
         # Fallback for this state if not yes/no
         prompt = f"You are a friendly sales agent. User said: '{user_input}'. User emotion: {emotion}. Your goal is to ask if they are interested. Respond naturally and briefly."
         ai_reply = ai_response(prompt)
-        next_action_url = build_next_url("awaiting_interest", phone) # Stay in this state
+        next_action_url = build_next_url("awaiting_interest", phone) 
         return create_twiml_response(ai_reply, next_action_url)
 
     #  Capture name 
@@ -184,9 +185,10 @@ def handle_conversation(
                 "If you have any query feel free to contact us on 20215"
             )
             
-            #  This is your lead-saving logic 
-            log_lead(user_name, "Interested", emotion, phone)
+            #  This is your lead-saving logic
+            background_tasks.add_task(log_lead, user_name, "Interested", emotion, phone)
             
+            # This part now runs instantly
             response.say(ai_reply_text)
             response.hangup()
             return Response(content=str(response), media_type="application/xml")
@@ -194,7 +196,7 @@ def handle_conversation(
         else:
             # User said something other than a name
             ai_reply_text = "I'm sorry, I didn't quite catch your name. Could you please tell me your name?"
-            next_action_url = build_next_url("awaiting_name", phone) # Stay in this state
+            next_action_url = build_next_url("awaiting_name", phone) 
             return create_twiml_response(ai_reply_text, next_action_url)
             
     #  Default fallback if state is unknown 
@@ -238,7 +240,7 @@ def start_outbound_call(phone: str):
 @app.get("/start-excel-call-list")
 def start_excel_call_list():
     """ Reads 'call_list.xlsx' and calls every number. """
-    call_list_path = os.path.join(SCRIPT_DIR, "call_list.xlsx")
+    call_list_path = os.path.join(SCRIPT_DIR, "customers.xlsx")
     if not os.path.exists(call_list_path):
         return {"error": "call_list.xlsx not found."}
 
