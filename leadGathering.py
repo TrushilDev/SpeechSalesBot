@@ -16,7 +16,6 @@ from twilio.twiml.voice_response import VoiceResponse, Gather
 from twilio.rest import Client
 from dotenv import load_dotenv
 from urllib.parse import quote
-# 
 
 # NLP & Spacy
 nlp = spacy.load("en_core_web_sm")
