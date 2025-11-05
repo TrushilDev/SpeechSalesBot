@@ -15,8 +15,6 @@ from urllib.parse import quote
 import uvicorn
 from fastapi import FastAPI, Form, Response, Query, Request,BackgroundTasks
 from twilio.twiml.voice_response import VoiceResponse, Gather
-
-# Added imports for making outbound calls 
 from twilio.rest import Client
 from dotenv import load_dotenv
 
