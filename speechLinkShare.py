@@ -12,8 +12,11 @@ from textblob import TextBlob
 import requests
 from difflib import SequenceMatcher
 from urllib.parse import quote
-
-
+import uvicorn
+from fastapi import FastAPI, Form, Response, Query, Request,BackgroundTasks
+from twilio.twiml.voice_response import VoiceResponse, Gather
+from twilio.rest import Client
+from dotenv import load_dotenv
 
 
 
@@ -35,7 +38,7 @@ def ai_response(prompt, model_name="phi3:mini"):
         print("Ollama Error:", e)
         return "I'm sorry, I didn’t catch that."
 
-
+# Emotion detection
 def detect_emotion(text):
     blob = TextBlob(text)
     s = blob.sentiment.polarity
@@ -76,7 +79,7 @@ def intro_message():
 AFFIRMATIVE = ["yes", "ya", "yup", "sure", "ha", "haan", "okay", "ok", "of course", "why not", "alright"]
 NEGATIVE = ["no", "nope", "not now", "not interested", "maybe later", "no thanks"]
 CALL_KEYWORDS = ["call me", "talk to agent", "contact me", "speak to agent", "connect me to agent"]
-# Moved INFO_KEYWORDS to global scope 
+
 INFO_KEYWORDS = ["tell me more", "details", "more info", "specs", "specifications", "explain", "description", "features"]
 
 #  SMS via HSP 
@@ -147,7 +150,7 @@ def log_turn(ai_question, user_response, emotion, ai_reply, phone_number):
         
         # Save to the absolute path 
         df_log.to_excel(LOG_FILE, index=False)
-        
+        print(f"--- Logged turn for {phone_number} ---")
     except Exception as e:
         # Make errors much more visible in the server log 
         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
@@ -163,8 +166,9 @@ app = FastAPI()
 def create_twiml_response(
     text_to_say: str, 
     action_url: str, 
-    speech_timeout: int = 5,  
-    num_retries: int = 2      
+    speech_timeout: int = 7,  
+    num_retries: int = 2,
+    language: str = "en-IN"      
 ):
     """
     Creates a TwiML response to <Say> text and then <Gather> (listen for) 
@@ -176,7 +180,7 @@ def create_twiml_response(
     response = VoiceResponse()
 
     #  First Attempt 
-    gather = Gather(input="speech", speechTimeout=str(speech_timeout), action=action_url, method="POST")
+    gather = Gather(input="speech", language=language, speechTimeout=str(speech_timeout), action=action_url, method="POST")
     gather.say(text_to_say)
     response.append(gather)
 
@@ -186,11 +190,10 @@ def create_twiml_response(
         response.say("I'm sorry, I didn't hear a response. Are you still there?")
         
         # We create another <Gather> for the retry
-        retry_gather = Gather(input="speech", speechTimeout=str(speech_timeout), action=action_url, method="POST")
+        retry_gather = Gather(input="speech", language=language, speechTimeout=str(speech_timeout), action=action_url, method="POST")
         response.append(retry_gather)
 
     #  Final Fallback 
-    # If *all* gathers have timed out, this code will be executed.
     response.say("Sorry we weren't able to hear you after the multiple times. Goodbye.")
     response.hangup()
     
@@ -226,6 +229,7 @@ def start_call(request: Request, From: str = Form(None), To: str = Form(None)):
 # This endpoint handles the entire conversation loop 
 @app.post("/handle-conversation")
 def handle_conversation(
+    background_tasks: BackgroundTasks,
     SpeechResult: str = Form(None),           
     persuasion: int = Query(0),               
     explained: int = Query(0),                
@@ -261,7 +265,7 @@ def handle_conversation(
         ai_reply_text = "Thank you for your time! Have a great day."
         response.say(ai_reply_text)
         response.hangup()
-        log_turn("[Stateful check]", user_input, emotion, ai_reply_text, phone)
+        background_tasks.add_task(log_turn, "[Stateful check]", user_input, emotion, ai_reply_text, phone)
         return Response(content=str(response), media_type="application/xml")
 
     #  Handle NO with persuasion 
@@ -271,13 +275,13 @@ def handle_conversation(
             ai_reply_text = OFFERS_LIST[persuasion_used - 1]
             # We update the state in the URL for the *next* turn 
             next_action_url = build_next_url(persuasion_used, product_explained)
-            log_turn("[Persuasion check]", user_input, emotion, ai_reply_text, phone)
+            background_tasks.add_task(log_turn, "[Persuasion check]", user_input, emotion, ai_reply_text, phone)
             return create_twiml_response(ai_reply_text, next_action_url)
         else:
             ai_reply_text = "No worries! Have a great day ahead."
             response.say(ai_reply_text)
             response.hangup()
-            log_turn("[Persuasion check]", user_input, emotion, ai_reply_text, phone)
+            background_tasks.add_task(log_turn, "[Persuasion check]", user_input, emotion, ai_reply_text, phone)
             return Response(content=str(response), media_type="application/xml")
 
     #  Handle YES (start product listing) 
@@ -290,7 +294,7 @@ def handle_conversation(
         
         # Update state, explained is now True (1) 
         next_action_url = build_next_url(persuasion_used, product_explained)
-        log_turn("[Intro response]", user_input, emotion, ai_reply_text, phone)
+        background_tasks.add_task(log_turn, "[Intro response]", user_input, emotion, ai_reply_text, phone)
         return create_twiml_response(ai_reply_text, next_action_url)
 
     #  Handle CALL agent 
@@ -307,10 +311,10 @@ def handle_conversation(
             ai_reply_text = "Our agent will contact you later. Meanwhile, would you like to hear about our products?"
             #  We ask again, so we loop back to the same state 
             next_action_url = build_next_url(persuasion_used, product_explained)
-            log_turn("[Agent check]", user_input, emotion, ai_reply_text, phone)
+            background_tasks.add_task(log_turn, "[Agent check]", user_input, emotion, ai_reply_text, phone)
             return create_twiml_response(ai_reply_text, next_action_url)
         
-        log_turn("[Agent check]", user_input, emotion, ai_reply_text, phone)
+        background_tasks.add_task(log_turn, "[Agent check]", user_input, emotion, ai_reply_text, phone)
         return Response(content=str(response), media_type="application/xml")
 
     #  Handle Info request 
@@ -332,7 +336,7 @@ def handle_conversation(
         
         #  Loop back, state doesn't change 
         next_action_url = build_next_url(persuasion_used, product_explained)
-        log_turn("[Info request]", user_input, emotion, ai_reply_text, phone)
+        background_tasks.add_task(log_turn, "[Intro request]", user_input, emotion, ai_reply_text, phone)
         return create_twiml_response(ai_reply_text, next_action_url)
 
     #  Match Product Name (This leads to an SMS and Hangup) 
@@ -361,7 +365,7 @@ def handle_conversation(
         )
         response.say(ai_reply_text)
         response.hangup()
-        log_turn("[Product match]", user_input, emotion, ai_reply_text, phone)
+        background_tasks.add_task(log_turn, "[Product match]", user_input, emotion, ai_reply_text, phone)
         return Response(content=str(response), media_type="application/xml")
 
     #  Fallback: AI Response (Ollama) or list products 
@@ -374,13 +378,10 @@ def handle_conversation(
     
     #  Loop back, state doesn't change 
     next_action_url = build_next_url(persuasion_used, product_explained)
-    log_turn("[Fallback]", user_input, emotion, ai_reply_text, phone)
+    background_tasks.add_task(log_turn, "[Fallback]", user_input, emotion, ai_reply_text, phone)
     return create_twiml_response(ai_reply_text, next_action_url)
 
-
-# --
-# ENDPOINTS TO TRIGGER OUTBOUND CALLS 
-# --
+# ENDPOINTS TO TRIGGER OUTBOUND CALLS
 
 def _initiate_call(user_number: str):
     """Helper function to load env vars and make a single call."""
@@ -432,7 +433,7 @@ def start_excel_call_list():
     Reads 'call_list.xlsx' and calls every number in the 'phone' column.
     Test this in your browser: http://localhost:8000/start-excel-call-list
     """
-    call_list_path = os.path.join(SCRIPT_DIR, "call_list.xlsx")
+    call_list_path = os.path.join(SCRIPT_DIR, "customers.xlsx")
     if not os.path.exists(call_list_path):
         return {"error": "call_list.xlsx not found in script directory."}
 
@@ -458,9 +459,6 @@ def start_excel_call_list():
 
 
 #  ORIGINAL MAIN CONVERSATION 
-# ... (all your commented-out original code is unchanged) ...
-
-# This is how you run the new FastAPI server 
 if __name__ == "__main__":
     # Check for openpyxl before starting 
     try:
