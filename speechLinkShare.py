@@ -13,11 +13,13 @@ import requests
 from difflib import SequenceMatcher
 from urllib.parse import quote
 import uvicorn
-from fastapi import FastAPI, Form, Response, Query, Request,BackgroundTasks
+from fastapi import FastAPI, Form, Response, Query, Request,BackgroundTasks,APIRouter,UploadFile,File
 from twilio.twiml.voice_response import VoiceResponse, Gather
 from twilio.rest import Client
 from dotenv import load_dotenv
+from fastapi.responses import FileResponse
 
+router = APIRouter() 
 #  NLP & Spacy 
 nlp = spacy.load("en_core_web_sm")
 
@@ -109,7 +111,7 @@ OFFERS_LIST = [
 ]
 
 # Load products once on server startup 
-PRODUCTS_LIST = load_products()
+# PRODUCTS_LIST = load_products()
 
 # Use an absolute path for the log file
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -156,7 +158,7 @@ def log_turn(ai_question, user_response, emotion, ai_reply, phone_number):
         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
 # FastAPI SERVER & TWILIO LOGIC START HERE 
-app = FastAPI()
+# app = FastAPI()
 
 # This is the modified function to handle silence retries 
 def create_twiml_response(
@@ -176,7 +178,13 @@ def create_twiml_response(
     response = VoiceResponse()
 
     #  First Attempt 
-    gather = Gather(input="speech", language=language, speechTimeout=str(speech_timeout), action=action_url, method="POST")
+    gather = Gather(
+        input="speech", 
+        language=language,
+        # speechTimeout=str(speech_timeout),
+        speechTimeout="auto",
+        action=action_url, method="POST"
+        )
     gather.say(text_to_say)
     response.append(gather)
 
@@ -186,7 +194,13 @@ def create_twiml_response(
         response.say("I'm sorry, I didn't hear a response. Are you still there?")
         
         # We create another <Gather> for the retry
-        retry_gather = Gather(input="speech", language=language, speechTimeout=str(speech_timeout), action=action_url, method="POST")
+        retry_gather = Gather(
+            input="speech",
+            language=language,
+            # speechTimeout=str(speech_timeout),
+            speechTimeout="auto",
+            action=action_url, method="POST"
+            )
         response.append(retry_gather)
 
     #  Final Fallback 
@@ -197,7 +211,8 @@ def create_twiml_response(
     return Response(content=str(response), media_type="application/xml")
 
 # This endpoint starts the call 
-@app.post("/start-call")
+# @app.post("/start-call")
+@router.post("/start-call")
 def start_call(request: Request, From: str = Form(None), To: str = Form(None)):
     """
     This is the first endpoint Twilio calls. 
@@ -211,7 +226,7 @@ def start_call(request: Request, From: str = Form(None), To: str = Form(None)):
     
     # State is passed in the URL: persuasion=0, explained=0, phone=...
     safe_phone = quote(user_phone)
-    action_url = f"/handle-conversation?persuasion=0&explained=0&phone={safe_phone}"
+    action_url = f"/link/handle-conversation?persuasion=0&explained=0&phone={safe_phone}"
     
     # Get the intro message
     intro = intro_message()
@@ -223,7 +238,8 @@ def start_call(request: Request, From: str = Form(None), To: str = Form(None)):
     return create_twiml_response(intro, action_url)
 
 # This endpoint handles the entire conversation loop 
-@app.post("/handle-conversation")
+# @app.post("/handle-conversation")
+@router.post("/handle-conversation")
 def handle_conversation(
     background_tasks: BackgroundTasks,
     SpeechResult: str = Form(None),           
@@ -254,7 +270,7 @@ def handle_conversation(
     # We build the next URL, carrying the state forward 
     def build_next_url(pers, expl):
         safe_phone = quote(phone)
-        return f"/handle-conversation?persuasion={pers}&explained={int(expl)}&phone={safe_phone}"
+        return f"/link/handle-conversation?persuasion={pers}&explained={int(expl)}&phone={safe_phone}"
 
     #  Exit 
     if user_input_lower in ["exit", "quit", "stop", "bye", "ok bye", "goodbye"]:
@@ -353,6 +369,27 @@ def handle_conversation(
         #  This still runs on your server, so it works! 
         send_sms_via_hsp(mobile_number, message) 
         
+        # SAVE PRODUCT SELECTION + CALL STATUS 
+        summary_path = os.path.join(SCRIPT_DIR, "call_summary.xlsx")
+
+    entry = pd.DataFrame([{
+        "phone": mobile_number,
+        "product": selected_product["product_name"],
+        "call_status": "Completed",
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }])
+
+    # Append or create
+    if os.path.exists(summary_path):
+        old = pd.read_excel(summary_path)
+        df_out = pd.concat([old, entry], ignore_index=True)
+    else:
+        df_out = entry
+
+        df_out.to_excel(summary_path, index=False)
+        print("✅ Saved to call_summary.xlsx →", entry.to_dict(orient="records"))
+
+        
         last_digits = "".join(mobile_number[-4:])
         ai_reply_text = (
             f"Great choice! I’ve sent the link of {selected_product['product_name']} "
@@ -393,7 +430,7 @@ def _initiate_call(user_number: str):
         return {"error": "Missing one or more .env variables (SID, TOKEN, TWILIO_NUMBER, NGROK_URL)"}
 
     try:
-        start_call_url = f"{ngrok_url}/start-call"
+        start_call_url = f"{ngrok_url}/link/start-call"
         client = Client(account_sid, auth_token)
 
         print(f" Attempting to call: {user_number} ")
@@ -410,7 +447,8 @@ def _initiate_call(user_number: str):
         return {"status": "Failed", "error": str(e), "to": user_number}
 
 
-@app.get("/start-outbound-call")
+# @app.get("/start-outbound-call")
+@router.get("/start-outbound-call")
 def start_outbound_call(phone: str):
     """
     Triggers a single outbound call.
@@ -422,23 +460,186 @@ def start_outbound_call(phone: str):
     
     return _initiate_call(phone)
 
+# phone normalizer
+def normalize_phone(num: str):
+    """ Convert phone number into clean format E.164 """
+    if num is None:
+        return None
+    
+    num = str(num).strip()
+    
+    # remove all the non-numberic character
+    cleaned = "".join(ch for ch in num if ch.isdigit())
+    
+    # Reject invalid lengths
+    if len(cleaned) < 10 or len(cleaned) > 13:
+        return None
+    
+    # remove leading zero 
+    if cleaned.startswith("0"):
+        cleaned = cleaned[1:]
+        
+    # if 10 digits assume India (+91)
+    if len(cleaned) == 10:
+        cleaned = "91" + cleaned
+        
+    # Verify if its start with +
+    if not cleaned.startswith("+"):
+        cleaned = "+" + cleaned
+        
+    return cleaned
 
-@app.get("/start-excel-call-list")
+# upload product file 
+@router.post("/upload-products-files")
+async def upload_products_file(file: UploadFile = File(...)):
+    """ Upload a new products.xlsx file → refresh PRODUCTS_LIST. """
+    
+    global PRODUCTS_LIST
+    
+    allowed_ext = ["xls","xlsx"]
+    name = file.filename.lower()
+    
+    if not any(name.endswith(ext) for ext in allowed_ext):
+        return{"error": "Only.xls or .xlsa files are allowed."}
+    
+    save_path = os.path.join(SCRIPT_DIR, "products.xlsx")
+    
+    try:
+        # save uploaded excel
+        contents = await file.read()
+        with open(save_path, "wb") as f:
+            f.write(contents)
+
+        # reload product list
+        PRODUCTS_LIST = load_products()
+
+        return {
+            "status": "Product file uploaded successfully",
+            "products_loaded": len(PRODUCTS_LIST)
+        }
+
+    except Exception as e:
+        return {"error": f"Could not save products file: {str(e)}"}
+    
+#  upload file 
+@router.post("/upload-customer-file")
+async def upload_customers_file(file: UploadFile = File(...)):
+    """
+    Upload Excel → Automatically start calling → Generate summary.
+    """
+    allowed_ext = ["xls", "xlsx"]
+    name = file.filename.lower()
+    
+    if not any(name.endswith(ext) for ext in allowed_ext):
+        return {"error": "Only .xls or .xlsx files are allowed."}
+
+    save_path = os.path.join(SCRIPT_DIR, "customers.xlsx")
+
+    try:
+        # Save the uploaded file
+        contents = await file.read()
+        with open(save_path, "wb") as f:
+            f.write(contents)
+
+        # Read the Excel file
+        df = pd.read_excel(save_path)
+
+        if "phone" not in df.columns:
+            return {"error": "Excel must contain a 'phone' column"}
+
+        # Clean whitespace
+        df["phone"] = df["phone"].astype(str).str.strip()
+
+        # Normalize numbers
+        df["normalized_phone"] = df["phone"].apply(normalize_phone)
+
+        # Invalid numbers
+        invalid_numbers = df[df["normalized_phone"].isna()]["phone"].tolist()
+
+        # Valid numbers
+        df_valid = df.dropna(subset=["normalized_phone"])
+        df_valid = df_valid.drop_duplicates(subset=["normalized_phone"])
+
+        phone_numbers = df_valid["normalized_phone"].tolist()
+        results = []
+
+        print(f"🚀 Starting Calls for {len(phone_numbers)} numbers...")
+
+        #  Start calling each number
+        for num in phone_numbers:
+            result = _initiate_call(str(num))
+            results.append(result)
+            time.sleep(1)  # Prevent rate limiting
+
+        #Create call_summary.xlsx
+        summary_path = os.path.join(SCRIPT_DIR, "call_summary.xlsx")
+        summary_df = pd.DataFrame({
+            "original_phone": df["phone"],
+            "normalized_phone": df["normalized_phone"],
+            "invalid_numbers": [", ".join(invalid_numbers)] * len(df)
+        })
+
+        summary_df.to_excel(summary_path, index=False)
+
+        #Return Result
+        return {
+            "status": "Upload Successful, Calls Started",
+            "numbers_called": len(phone_numbers),
+            "invalid_numbers": invalid_numbers,
+            "summary_file": "call_summary.xlsx",
+            "call_results": results
+        }
+
+    except Exception as e:
+        return {"error": f"Could not process file: {str(e)}"}
+    
+@router.get("/download-summary")
+def download_summary():
+    """
+    Allows downloading of call_summary.xlsx
+    """
+    summary_path = os.path.join(SCRIPT_DIR, "call_summary.xlsx")
+
+    if not os.path.exists(summary_path):
+        return {"error": "Summary file not found. Please run /start-excel-call-list first."}
+
+    return FileResponse(summary_path, filename="call_summary.xlsx")
+
+@router.get("/start-excel-call-list") 
 def start_excel_call_list():
     """
-    Reads 'call_list.xlsx' and calls every number in the 'phone' column.
-    Test this in your browser: http://localhost:8000/start-excel-call-list
+    Reads 'customers.xlsx', validates phone column, normalizes numbers,
+    removes duplicates, auto-cleans data, and generates call_summary.xlsx.
     """
     call_list_path = os.path.join(SCRIPT_DIR, "customers.xlsx")
+    summary_path = os.path.join(SCRIPT_DIR,"call_summary.xlsx")
+    
     if not os.path.exists(call_list_path):
-        return {"error": "call_list.xlsx not found in script directory."}
+        return {"error": "call_list.xlsx not found.Please upload using /upload-customers-file"}
 
     try:
         df = pd.read_excel(call_list_path)
+        
+        # cleaning white space 
+        df["phone"] = df["phone"].astype(str).str.strip()
+        
+        # normalize number
+        df["normalized_phone"] = df["phone"].apply(normalize_phone)
+        
+        # find invalid number
+        invalid_numbers = df[df["normalized_phone"].isna()]["phone"].tolist()
+        
+        # remove invalid rows
+        df_valid = df.dropna(subset=["normalized_phone"])
+        
+        # remove duplicates
+        
+        df_valid = df_valid.drop_duplicates(subset=["normalized_phone"])
+        
         if "phone" not in df.columns:
             return {"error": "Excel file must have a 'phone' column."}
         
-        phone_numbers = df["phone"].dropna().tolist()
+        phone_numbers = df_valid["normalized_phone"].dropna().tolist()
         results = []
         
         print(f" Starting Excel Call List ({len(phone_numbers)} numbers) ")
@@ -448,39 +649,54 @@ def start_excel_call_list():
             time.sleep(1) # Add a small delay between calls
         
         print(" Excel Call List Finished ")
-        return {"status": "Call list processed", "results": results}
+        summary_df = pd.DataFrame({
+            "original_phone": df["phone"],
+            "normalized_phone": df["normalized_phone"],
+            "invalid_numbers": [", ".join(invalid_numbers)] * len(df)
+        })
+
+        summary_df.to_excel(summary_path, index=False)
+
+        return {
+            "status": "Excel processed successfully",
+            "valid_numbers": len(phone_numbers),
+            "invalid_numbers": invalid_numbers,
+            "summary_created": "call_summary.xlsx",
+            "results": results
+        }
+        # return {"status": "Call list processed", "results": results}
         
     except Exception as e:
         return {"error": f"Failed to read Excel file: {str(e)}"}
 
 
 #  ORIGINAL MAIN CONVERSATION 
-if __name__ == "__main__":
+# if __name__ == "__main__":
     # Check for openpyxl before starting 
-    try:
-        import openpyxl
-    except ImportError:
-        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        print("WARNING: 'openpyxl' not found. Excel logging will fail.")
-        print("Please install it: pip install openpyxl")
-        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        time.sleep(3) # Pause to make sure user sees the warning
+    # try:
+    #     import openpyxl
+    # except ImportError:
+    #     print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    #     print("WARNING: 'openpyxl' not found. Excel logging will fail.")
+    #     print("Please install it: pip install openpyxl")
+    #     print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    #     time.sleep(3) # Pause to make sure user sees the warning
         
-    # Check for python-dotenv before starting 
-    try:
-        import dotenv
-    except ImportError:
-        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        print("WARNING: 'python-dotenv' not found. Outbound calls will fail.")
-        print("Please install it: pip install python-dotenv")
-        print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        time.sleep(3) # Pause to make sure user sees the warning
+    # # Check for python-dotenv before starting 
+    # try:
+    #     import dotenv
+    # except ImportError:
+    #     print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    #     print("WARNING: 'python-dotenv' not found. Outbound calls will fail.")
+    #     print("Please install it: pip install python-dotenv")
+    #     print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    #     time.sleep(3) # Pause to make sure user sees the warning
 
-    print(" Starting FastAPI server for Twilio ")
-    print(f" Log file will be saved at: {LOG_FILE} ")
-    print(" Your server will be at http://localhost:8000 ")
-    print(" Your first Twilio webhook URL will be http://<your_ngrok_url>/start-call ")
-    print("\n Outbound Call Endpoints ")
-    print("Call a single number: http://localhost:8000/start-outbound-call?phone=NUMBER_TO_CALL")
-    print("Call from Excel list: http://localhost:8000/start-excel-call-list")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # print(" Starting FastAPI server for Twilio ")
+    # print(f" Log file will be saved at: {LOG_FILE} ")
+    # print(" Your server will be at http://localhost:8000 ")
+    # print(" Your first Twilio webhook URL will be http://<your_ngrok_url>/start-call ")
+    # print("\n Outbound Call Endpoints ")
+    # print("Call a single number: http://localhost:8000/start-outbound-call?phone=NUMBER_TO_CALL")
+    # print("Call from Excel list: http://localhost:8000/start-excel-call-list")
+    # uvicorn.run(app, host="0.0.0.0", port=8000)
