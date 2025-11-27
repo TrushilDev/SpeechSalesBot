@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 from leadGathering import (
     router as lead_router,
-    _initiate_call as initiate_lead_call,
+    _initiate_call as _initiate_lead_call,
     # start_excel_call_list as lead_excel_call_list,
     )
 from speechLinkShare import (
@@ -24,10 +24,10 @@ app.add_middleware(
 
 # Lead gathering end point
 @app.get("/start-outbound-call-leadGathering")
-def start_outbound_call_lead(phone: str, storage: str = "supabase"):
+def start_outbound_call_lead(phone: str):
     if not phone:
         return {"error": "Phone missing"}
-    return initiate_lead_call(phone,storage)
+    return _initiate_lead_call(phone)
 
 # link share of the product
 @app.get("/start-outbound-call-linkShare")

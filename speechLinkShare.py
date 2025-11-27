@@ -372,24 +372,23 @@ def handle_conversation(
         # SAVE PRODUCT SELECTION + CALL STATUS 
         summary_path = os.path.join(SCRIPT_DIR, "call_summary.xlsx")
 
-    entry = pd.DataFrame([{
-        "phone": mobile_number,
-        "product": selected_product["product_name"],
-        "call_status": "Completed",
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }])
+        entry = pd.DataFrame([{
+            "phone": mobile_number,
+            "product": selected_product["product_name"],
+            "call_status": "Completed",
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }])
 
-    # Append or create
-    if os.path.exists(summary_path):
-        old = pd.read_excel(summary_path)
-        df_out = pd.concat([old, entry], ignore_index=True)
-    else:
-        df_out = entry
+        # Append or create
+        if os.path.exists(summary_path):
+            old = pd.read_excel(summary_path)
+            df_out = pd.concat([old, entry], ignore_index=True)
+        else:
+            df_out = entry
 
         df_out.to_excel(summary_path, index=False)
         print("✅ Saved to call_summary.xlsx →", entry.to_dict(orient="records"))
 
-        
         last_digits = "".join(mobile_number[-4:])
         ai_reply_text = (
             f"Great choice! I’ve sent the link of {selected_product['product_name']} "

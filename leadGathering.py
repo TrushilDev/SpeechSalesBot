@@ -18,24 +18,10 @@ from dotenv import load_dotenv
 from urllib.parse import quote
 from multi_agent_core import run_multi_agent
 from urllib.parse import quote
+import os
 
 
 load_dotenv()
-from supabase import create_client, Client
-# Supabase config
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-supabase: Client | None = None
-if SUPABASE_URL and SUPABASE_KEY:
-    try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        print("✅ Supabase client initialized")
-    except Exception as e:
-        print("❌ Failed to initialize Supabase client:", e)
-        supabase = None
-else:
-    print("⚠️ SUPABASE_URL or SUPABASE_KEY not set. Supabase logging disabled.")
 
 
 router = APIRouter()
@@ -130,42 +116,7 @@ def log_lead_excel(user_name, interest, emotion, phone_number):
     except Exception as e:
         print(f" CRITICAL ERROR logging lead to Excel: {e} ")
         
-# data store in the supabase 
-def log_lead_supabase(user_name, interest, emotion, phone_number):
-    """Save lead into Supabase 'leads' table."""
-    if not supabase:
-        print("⚠️ Supabase client not initialized. Cannot save lead to Supabase.")
-        return
-    
-    try:
-        data = {
-            "name": user_name,
-            "interest": interest,
-            "emotion": emotion,
-            "phone_number": phone_number,
-            "timestamp": datetime.now().isoformat()
-        }
-        supabase.table("leads").insert(data).execute()
-        print(f"✅ Lead saved in Supabase for {user_name}")
-    except Exception as e:
-        print(f"❌ Supabase insert error for {user_name}: {e}")
         
-# option to choose 
-def log_lead(user_name, interest, emotion, phone_number, storage: str = "excel"):
-    """
-    storage: 'excel' or 'supabase'
-    """
-    storage = (storage or "excel").lower().strip()
-    
-    if storage == "supabase":
-        log_lead_supabase(user_name, interest, emotion, phone_number)
-    else:
-        log_lead_excel(user_name, interest, emotion, phone_number)
-
-        
-#  FastAPI SERVER & TWILIO LOGIC START HERE 
-# app = FastAPI()
-
 #  Helper function for TwiML responses with silence retry 
 def create_twiml_response(text_to_say: str, action_url: str):
     response = VoiceResponse()
@@ -200,23 +151,23 @@ def create_twiml_response(text_to_say: str, action_url: str):
     return Response(content=str(response), media_type="application/xml")
 
 #  Helper function to build the next URL with state 
-def build_next_url(state: str, phone: str, storage: str):
+def build_next_url(state: str, phone: str):
     safe_phone = quote(phone)
-    safe_storage = quote(storage)
-    return f"/lead/handle-conversation?state={state}&phone={safe_phone}&storage={safe_storage}"
+    return f"/lead/handle-conversation?state={state}&phone={safe_phone}"
 
 #  This endpoint starts the call captures user's number 
 # @app.post("/start-call")
 @router.post("/start-call")
-def start_call(request: Request, From: str = Form(None), To: str = Form(None), storage: str = Query("excel")):
+@router.get("/start-call")
+def start_call(request: Request, From: str = Form(None), To: str = Form(None)):
     """ This is the first endpoint Twilio calls. Catches the 'To' number. """
-    print(f" New Call Started. From: {From}, To: {To}, Storage Mode:{storage} ")
+    print(f" New Call Started. From: {From}, To: {To} ")
     
     # Use 'To' the user's number for the state
     user_phone = To if To else "Unknown"
     
     # The first state is "awaiting_interest"
-    action_url = build_next_url("awaiting_interest", user_phone, storage)
+    action_url = build_next_url("awaiting_interest", user_phone)
     intro = intro_message()
     
     # We don't log a lead yet, just start the conversation
@@ -225,13 +176,13 @@ def start_call(request: Request, From: str = Form(None), To: str = Form(None), s
 #  This endpoint handles the entire conversation loop 
 # @app.post("/handle-conversation")
 @router.post("/handle-conversation")
+@router.get("/handle-conversation")
 def handle_conversation(
     background_tasks: BackgroundTasks, 
     SpeechResult: str = Form(None),
     state: str = Query("awaiting_interest"), 
     phone: str = Query("Unknown"),
-    storage: str = Query("excel")
-):
+    ):
     """
     This is the main "loop" based on your new script's logic.
     """
@@ -256,7 +207,7 @@ def handle_conversation(
         if affirmative_match:
             CONV_STATE[phone]["retries"] = 0
             ai_reply_text = "That’s great! May I know your good name, please?"
-            next_action_url = build_next_url("awaiting_name", phone, storage) 
+            next_action_url = build_next_url("awaiting_name", phone) 
             return create_twiml_response(ai_reply_text, next_action_url)
         
         # elif negative_match or user_input_lower in ["exit", "quit", "stop", "bye", "goodbye", "ok bye"]:
@@ -267,34 +218,32 @@ def handle_conversation(
         
         # if users says no 
         if negative_match:
-            CONV_STATE[phone]["retries"] +=1
+            CONV_STATE[phone]["retries"] += 1
             retry_count = CONV_STATE[phone]["retries"]
-            
+
             print(f"Persuasion attempt #{retry_count} for {phone}")
-            
+
             if retry_count >= 5:
-                response.say(
-                    "No problem.Thank you for your time! Have a great day."
-                )
+                response.say("No problem.Thank you for your time! Have a great day.")
                 response.hangup()
                 return Response(content=str(response), media_type="application/xml")
-            
+
             PERSUASIVE_LINES = [
                 "Sir, just 10 seconds please, I promise this is helpful.",
                 "Sir, this will really benefit you, just hear me out for a moment.",
                 "Sir, one quick thing — this offer is really worthwhile.",
                 "Sir, just a moment, I believe this can help you a lot.",
                 "Sir, trust me, this information may be important for you."
-                ]
+            ]
+
             persuasive_reply = PERSUASIVE_LINES[(retry_count - 1) % len(PERSUASIVE_LINES)]
-           
             persuasive_reply = simple_llm(persuasive_reply)
-            print("DEBUG PERSUASIVE REPLY: ", repr(persuasive_reply))
-            
-            if not persuasive_reply or len (persuasive_reply.strip()) < 2:
+
+            if not persuasive_reply or len(persuasive_reply.strip()) < 2:
                 persuasive_reply = "Sir, just give me 10 seconds, this is really beneficial for you."
-            next_action_url = build_next_url("awaiting_interest",phone, storage)
-            return create_twiml_response(persuasive_reply,next_action_url)
+
+            next_action_url = build_next_url("awaiting_interest", phone)
+            return create_twiml_response(persuasive_reply, next_action_url)
         
         # unclear ask again using ai 
         fallback_prompt = (
@@ -306,7 +255,7 @@ def handle_conversation(
         fallback_reply = simple_llm(fallback_prompt)
         if not fallback_reply.strip():
             fallback_reply = "Just checking again sir, would like to know about our offers?"
-        next_action_url = build_next_url("awaiting_interest", phone,storage)
+        next_action_url = build_next_url("awaiting_interest", phone)
         return create_twiml_response(fallback_reply,next_action_url)
         
         # # Fallback for this state if not yes/no
@@ -318,7 +267,8 @@ def handle_conversation(
     #  Capture name 
     elif state == "awaiting_name":
         # Check if it's a valid name not just "yes" or "no" or empty
-        if user_input != "No response" and user_input_lower not in AFFIRMATIVE and user_input_lower not in NEGATIVE:
+        cleaned = user_input_lower.strip()
+        if cleaned not in ["", "no response"] and cleaned not in AFFIRMATIVE and cleaned not in NEGATIVE:
             user_name = SpeechResult 
             
             #  This is your final message 
@@ -328,8 +278,8 @@ def handle_conversation(
                 "If you have any query feel free to contact us on 20215"
             )
             
-            #  This is your lead-saving logic
-            background_tasks.add_task(log_lead, user_name, "Interested", emotion, phone, storage)
+             #  This is your lead-saving logic
+            background_tasks.add_task(log_lead_excel, user_name, "Interested", emotion, phone)
             
             # This part now runs instantly
             response.say(ai_reply_text)
@@ -339,7 +289,7 @@ def handle_conversation(
         else:
             # User said something other than a name
             ai_reply_text = "I'm sorry, I didn't quite catch your name. Could you please tell me your name?"
-            next_action_url = build_next_url("awaiting_name", phone, storage) 
+            next_action_url = build_next_url("awaiting_name", phone) 
             return create_twiml_response(ai_reply_text, next_action_url)
             
     #  Default fallback if state is unknown 
@@ -350,29 +300,54 @@ def handle_conversation(
 
 
 #  ENDPOINTS TO TRIGGER OUTBOUND CALLS 
-def _initiate_call(user_number: str, storage: str = "supabase"):
+def _initiate_call(user_number: str):
     """Helper function to load env vars and make a single call."""
     load_dotenv()
+
     account_sid = os.getenv("TWILIO_ACCOUNT_SID")
     auth_token = os.getenv("TWILIO_AUTH_TOKEN")
     twilio_number = os.getenv("TWILIO_NUMBER")
-    ngrok_url = os.getenv("NGROK_URL")
+
+    # 🔍 Get raw NGROK_URL and sanitize it
+    ngrok_raw = os.getenv("NGROK_URL", "")
+    print("RAW NGROK_URL repr ->", repr(ngrok_raw))
+
+    # Strip spaces, quotes, trailing slash
+    ngrok_url = ngrok_raw.strip().strip('"').strip("'").rstrip("/")
+    print("CLEAN NGROK_URL repr ->", repr(ngrok_url))
 
     if not all([account_sid, auth_token, twilio_number, ngrok_url]):
         print(" ERROR: Missing .env variables ")
-        return {"error": "Missing .env variables (SID, TOKEN, TWILIO_NUMBER, NGROK_URL)"}
+        return {
+            "error": "Missing .env variables (SID, TOKEN, TWILIO_NUMBER, NGROK_URL)"
+        }
 
     try:
-        safe_url = quote(f"{ngrok_url}/lead/start-call?storage={storage}", safe=":/?=&")
-        start_call_url = safe_url
-        print("DEBUG FINAL URL →", repr(start_call_url)) 
+        # ✅ ALWAYS https, ALWAYS full absolute URL
+        start_call_url = f"{ngrok_url}/lead/start-call"
+        print("FINAL start_call_url repr ->", repr(start_call_url))
+
         client = Client(account_sid, auth_token)
         print(f" Attempting to call: {user_number} ")
-        call = client.calls.create(to=user_number, from_=twilio_number, url=start_call_url)
-        print(f"Successfully initiated call! SID: {call.sid}")
-        return {"status": "Call initiated", "sid": call.sid, "to": user_number, "storage": storage}
+
+        # 🔥 TEST 1: Try Twilio demo URL to confirm Twilio client is okay
+        # demo_call = client.calls.create(
+        #     to=user_number,
+        #     from_=twilio_number,
+        #     url="https://demo.twilio.com/welcome/voice/"
+        # )
+        # print("✅ Demo call created:", demo_call.sid)
+
+        # 🔥 REAL CALL with your URL
+        call = client.calls.create(
+            to=user_number,
+            from_=twilio_number,
+            url=start_call_url,
+        )
+        print(f"✅ Successfully initiated call! SID: {call.sid}")
+        return {"status": "Call initiated", "sid": call.sid, "to": user_number}
     except Exception as e:
-        print(f" Error making call to {user_number}: {e} ")
+        print(f"❌ Error making call to {user_number}: {repr(e)} ")
         return {"status": "Failed", "error": str(e), "to": user_number}
 
 # @app.get("/start-outbound-call")
